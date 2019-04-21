@@ -1,0 +1,11 @@
+object XCleaner: TXCleaner
+  OldCreateOrder = False
+  DisplayName = 'Xcleaner'
+  Interactive = True
+  OnStart = ServiceStart
+  OnStop = ServiceStop
+  Left = 194
+  Top = 108
+  Height = 150
+  Width = 215
+end

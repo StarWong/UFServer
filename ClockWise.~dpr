@@ -1,0 +1,14 @@
+program ClockWise;
+
+uses
+  SvcMgr,
+  ServMain in 'ServMain.pas' {Actserver: TService};
+
+{$R *.RES}
+
+begin
+  Application.Initialize;
+  Application.Title := '自动关机';
+  Application.CreateForm(TActserver, Actserver);
+  Application.Run;
+end.

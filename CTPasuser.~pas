@@ -1,0 +1,620 @@
+unit CTPasuser;
+
+interface
+
+uses
+    Windows, SysUtils, ShlObj, ActiveX, ComObj, Registry, _delfile, WindowsSysVersion, TlHelp32, PerlRegEx, ShellAPI, Classes, PsAPI;
+
+type
+    TLINK_FILE_INFO = record
+        Filename: array[0..MAX_PATH] of Char; { 目标文件名 }
+        WorkDirectory: array[0..MAX_PATH] of Char; { 工作目录或者起始目录 }
+        IconLocation: array[0..MAX_PATH] of Char; { 图标文件名 }
+        IconIndex: Integer; { 图标索引 }
+        Arguments: array[0..MAX_PATH] of Char; { 程序运行的参数 }
+        Description: array[0..255] of Char; { 快捷方式的描述 }
+        ItemIDList: PItemIDList; { 只供读取使用 }
+        RelativePath: array[0..255] of Char; { 相对目录，只能设置 }
+        ShowState: Integer; { 运行时的窗口状态 }
+        HotKey: Word; { 快捷键 }
+    end;
+type
+    PTokenMandatoryLabel = ^TTokenMandatoryLabel;
+    TTokenMandatoryLabel = packed record
+        Label_: TSidAndAttributes;
+    end;
+type
+    PPROC_THREAD_ATTRIBUTE_LIST = Pointer;
+    STARTUPINFOEX = packed record
+        StartupInfoX: StartupInfo;
+        lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST;
+    end;
+const
+    MAXIMUM_ALLOWED: UINT = $2000000;
+    CREATE_NEW_CONSOLE: Integer = $00000010;
+    CREATE_UNICODE_ENVIRONMENT: Integer = $00000400;
+    NORMAL_PRIORITY_CLASS: Integer = $20;
+    SE_SECURITY_NAME = 'SeSecurityPrivilege';
+    PROC_THREAD_ATTRIBUTE_PARENT_PROCESS = $00020000;
+    EXTENDED_STARTUPINFO_PRESENT = $00080000;
+    wtsapi='Wtsapi32.dll';
+function CDTOCD(StringSecurityDescriptor: LPWSTR;
+    StringSDRevision: DWORD; var SecurityDescriptor: PSecurity_Descriptor; var SecurityDescriptorSize: PULONG): Boolean; stdcall;
+external 'Advapi32.dll' name 'ConvertStringSecurityDescriptorToSecurityDescriptorW';
+function GetLastError: DWORD; stdcall;
+external kernel32 name 'GetLastError';
+function WTSOpenServer(Hserver:LPTSTR): THandle; stdcall;
+external 'Wtsapi32.dll' name 'WTSOpenServer';
+procedure WTSCloseServer(Hserver:THandle); stdcall;
+external 'Wtsapi32.dll' name 'WTSCloseServer';
+function wvprintf(var lpout: LPSTR; const fmt: PChar; lpin: LPSTR): Integer; stdcall;
+external 'user32.dll' name 'wsprintf';
+function WTSGetActiveConsoleSessionId: DWORD; stdcall;
+external kernel32 name 'WTSGetActiveConsoleSessionId';
+//function WTSSendMessage(hServer:THandle;SessionId:DWORD;pTitle:LPTSTR;TitleLength:DWORD;
+//pMessage:LPTSTR;MessageLength:DWORD;Style:DWORD;Timeout:DWORD;var pResponse:PDWORD;bWait:Boolean): Boolean; stdcall;
+//external 'WTSAPI32.dll' name 'WTSSendMessage';
+function WTSQueryUserToken(SessionId: DWORD; var hPToken: THandle): Boolean; stdcall;
+external 'WTSAPI32.dll' name 'WTSQueryUserToken';
+function CreateEnvironmentBlock(lpEnvironment: PPoint; hToken: THandle; bInherit: Boolean): Boolean; stdcall;
+external 'Userenv.dll' name 'CreateEnvironmentBlock';
+function DestroyEnvironmentBlock(pEnvironment: Pointer): Boolean; stdcall;
+external 'Userenv.dll' name 'DestroyEnvironmentBlock';
+function StartProcessAndBypassUAC(CommandLine: LPSTR; var procInfo: PROCESS_INFORMATION): Boolean;
+function GetIdByName(szName: pchar): DWORD;
+function GetAccountSID(anAccountName: string): Pointer;
+{$EXTERNALSYM ConvertSidToStringSid}
+function ConvertSidToStringSid(Sid: PSID; StringSid: LPTSTR): BOOL; stdcall;
+{$EXTERNALSYM ConvertSidToStringSidA}
+function ConvertSidToStringSidA(Sid: PSID; StringSid: LPTSTR): BOOL; stdcall;
+{$EXTERNALSYM ConvertSidToStringSidW}
+function ConvertSidToStringSidW(Sid: PSID; StringSid: LPTSTR): BOOL; stdcall;
+function ConvertSidToStringSid; external advapi32 name 'ConvertSidToStringSidA';
+function ConvertSidToStringSidA; external advapi32 name 'ConvertSidToStringSidA';
+function ConvertSidToStringSidW; external advapi32 name 'ConvertSidToStringSidW';
+function Regex(spath: string; s: string): string;
+function GetLinkFileInfo(LnkFileName: string; var LnkInfo: TLINK_FILE_INFO): Boolean;
+procedure GutNOUseCut(spath: string);
+procedure SaveLog(Str: string);
+procedure AppendTxt(filePath: string; Str: string);
+procedure NewTxt(filePath: string);
+function MyCreateProcessAsUser(CommandLine: LPSTR): Boolean;
+function InitializeProcThreadAttributeList(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST; dwAttributeCount, dwFlags: DWORD; var lpSize: Cardinal): Boolean; stdcall;
+external 'kernel32.dll';
+procedure UpdateProcThreadAttribute(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST; dwFlags, Attribute: DWORD; var pValue: DWORD; cbSize: Cardinal; pPreviousValue: Pointer;
+    pReturnSize: PCardinal); stdcall; external 'kernel32.dll';
+procedure DeleteProcThreadAttributeList(lpAttributeList: PPROC_THREAD_ATTRIBUTE_LIST); stdcall; external 'Kernel32.dll';
+function  EnableDebugPrivilege(PrivName: string; CanDebug: Boolean): Boolean;
+function CreateProcessOnParentProcess(CommandLine: LPSTR):Boolean;
+function LoadWtsApi: LongBool;
+function WTSSendMessage(Server: HWND; SessionId: DWORD; Title: PChar;
+  TitleLength: DWORD; AMessage: PChar; MessageLength: DWORD; Style: DWORD;
+  Timeout: DWORD; var Response: DWORD; Wait: Boolean): Boolean; stdcall;
+  external 'wtsapi32.dll' name 'WTSSendMessageA';
+implementation
+
+function LoadWtsApi: LongBool;  //动态加载WTSEnumerateProcessesA和WTSFreeMemory
+var
+  HWtsApi:Thandle;
+  WTSOpenServ:PDWORD; 
+begin 
+  if HWtsApi = 0 then 
+  begin 
+    HWtsApi := LoadLibrary(WtsApi); 
+    if HWtsApi<> 0 then 
+    begin
+      WTSOpenServ:= GetProcAddress(HWtsApi,'WTSSendMessageW');
+      //WTSFreeMemory        := GetProcAddress(HWtsApi, ’WTSFreeMemory’);
+    end; 
+  end;
+  Result := Assigned(WTSOpenServ);
+end;
+
+procedure SaveLog(Str: string); //记录日志文件,主进程函数
+var
+    DirectoryPath, logFileName: string;
+begin
+    DirectoryPath := ExtractFilePath(paramstr(0));
+    logFileName := 'XBOOT.log';
+    if not fileExists(DirectoryPath + logFileName) then
+    begin
+        NewTxt(DirectoryPath + logFileName);
+        AppendTxt(DirectoryPath + logFileName, Str);
+    end
+    else
+        AppendTxt(DirectoryPath + logFileName, Str)
+end;
+//追加文件内容
+
+procedure AppendTxt(filePath: string; Str: string); //主进程函数
+var
+    F: Textfile;
+begin
+    AssignFile(F, filePath);
+    Append(F);
+    Writeln(F, Str);
+    Closefile(F);
+end;
+
+//新建文件                                                //主进程函数
+
+procedure NewTxt(filePath: string);
+var
+    F: Textfile;
+begin
+    AssignFile(F, filePath);
+    ReWrite(F);
+    Closefile(F);
+end;
+
+function GetLinkFileInfo(LnkFileName: string; var LnkInfo: TLINK_FILE_INFO): Boolean;
+var
+    LnkObj: IUnknown;
+    ShellPFile: IPersistFile;
+    ShellLink: IShellLink;
+    WideFileName: WideString;
+    pfd: WIN32_FIND_DATA;
+begin
+    FillChar(LnkInfo, SizeOf(LnkInfo), #0);
+    try
+        coinitialize(nil);
+        LnkObj := CreateComObject(CLSID_ShellLink);
+        ShellPFile := LnkObj as IPersistFile;
+        ShellLink := LnkObj as IShellLink;
+        WideFileName := LnkFileName;
+        ShellPFile.Load(PWideChar(WideFileName), 0);
+        ShellLink.GetPath(LnkInfo.Filename, 1024, pfd, SLGP_UNCPRIORITY); { 获取快捷方式文件路径 }
+        ShellLink.GetWorkingDirectory(LnkInfo.WorkDirectory, MAX_PATH); { 获取快捷方式工作目录 }
+        ShellLink.GetIconLocation(LnkInfo.IconLocation, MAX_PATH, LnkInfo.IconIndex); { 获取快捷方式图标文件，和图标索引 }
+        ShellLink.GetArguments(LnkInfo.Arguments, 1024); { 获取快捷方式运行参数 }
+        ShellLink.GetDescription(LnkInfo.Arguments, 1024); { 获取快捷方式描述 }
+        ShellLink.GetShowCmd(LnkInfo.ShowState); { 获取快捷方式运行方式，1：常规窗体；2：最小化；3：最大化 }
+        ShellLink.GetHotkey(LnkInfo.HotKey); { 获取快捷方式快捷键 }
+        ShellLink := nil;
+        ShellPFile := nil;
+    finally
+        couninitialize;
+    end;
+    Result := True;
+end;
+
+procedure GutNOUseCut(spath: string);
+var
+    SearchRec: TSearchRec;
+    Found: Integer;
+    Lnk: TLINK_FILE_INFO;
+    Reg: TRegistry;
+    path: string;
+begin
+    reg := TRegistry.Create;
+    Reg.RootKey := HKEY_USERS;
+    if Reg.OpenKey(spath + '\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders', false) then
+        path := Reg.ReadString('Desktop') + '\';
+    Reg.CloseKey;
+    Reg.Free;
+    found := FindFirst(path + '*.lnk', faAnyFile, SearchRec);
+    while found = 0 do
+    begin
+        if (SearchRec.Name <> '.') and (SearchRec.name <> '..') then
+        begin
+            if ((SearchRec.Attr and faDirectory) <> 16) then
+            begin
+
+                if GetLinkFileInfo(path + searchrec.Name, Lnk) then
+                begin
+                    if not FileExists(Lnk.Filename) then
+                    begin
+                        DeleteFile(path + searchrec.Name);
+
+                    end;
+
+
+                end;
+            end;
+        end;
+
+
+        found := FindNext(SearchRec);
+    end;
+    SysUtils.FindClose(SearchRec);
+end;
+
+function Regex(SPath: string; s: string): string;
+var
+    Tper: TPerlRegEx;
+    Reg: TRegistry;
+    Regarray: array of array of string;
+    SREG: TStringList;
+    I, j: Integer;
+    outstr: string;
+begin
+    Result := '';
+    outstr := s;
+    sreg := TStringList.Create;
+    reg := TRegistry.Create(KEY_ALL_ACCESS or $0100);
+    reg.RootKey := HKEY_USERS;
+    if Reg.OpenKey(spath, False) then
+    begin
+        Reg.GetValueNames(SREG);
+        SetLength(Regarray, SREG.Count, 2);
+        for i := 0 to SREG.Count - 1 do
+        begin
+            Regarray[i][0] := SREG[i];
+            Regarray[i][1] := Reg.ReadString(SREG[i]);
+        end;
+        Reg.CloseKey;
+    end;
+    Tper := TPerlRegEx.Create;
+    Tper.Subject := s;
+    Tper.RegEx := '(?<=^|\\)%\w+%(?=\\|$)';
+    while Tper.MatchAgain do
+    begin
+        for j := 0 to sreg.Count - 1 do
+        begin
+            if UpperCase(Tper.MatchedText) = UpperCase('%' + (Regarray[j][0]) + '%') then
+            begin
+                outstr := StringReplace(outstr, Tper.MatchedText, Regarray[j][1], [rfReplaceAll, rfIgnoreCase]);
+            end;
+        end;
+
+    end;
+    tper.Subject := outstr;
+    Tper.RegEx := '^[a-zA-Z]:(((\\(?! )[^/:*?<>\""|\\]+)+\\?)|(\\)?)\s*$';
+    if Tper.Match then
+    begin
+        outstr := TrimRight(outstr);
+        if Copy(outstr, Length(outstr), 1) <> '\' then
+        begin
+            Tper.RegEx := '%';
+            if not Tper.Match then Result := outstr;
+        end;
+    end;
+    Tper.Free;
+end;
+
+function GetAccountSID(anAccountName: string): Pointer;
+var
+    cb: CARDINAL;
+    refDomainName: array[0..1024] of Char;
+    cbRefDomainName: Cardinal;
+    peUse: Cardinal;
+    SD: Pointer;
+begin
+    SD := nil;
+    try
+        cbRefDomainName := SizeOf(refDomainName);
+        FillChar(refDomainName, cbRefDomainName, 0);
+        cb := 0;
+        LookupAccountName(nil, PChar(anAccountName), nil, cb, refDomainName, cbRefDomainName, peUse);
+        if cb > 0 then
+        begin
+            GetMem(SD, cb);
+            FillChar(SD^, cb, 0);
+            if not LookupAccountName(nil, PChar(anAccountName), SD, cb, refDomainName, cbRefDomainName, peUse) then
+            begin
+                FreeMem(SD, cb);
+                SD := nil;
+            end;
+        end
+        else
+        begin
+            SD := nil;
+        end;
+    finally
+        Result := SD;
+    end;
+end;
+
+function GetIdByName(szName: pchar): DWORD;
+var
+    hProcessSnap: THANDLE;
+    pe32: TProcessEntry32;
+    dwRet: DWORD;
+begin
+    hProcessSnap := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hProcessSnap = INVALID_HANDLE_VALUE) then
+    begin
+        Result := 0;
+        Exit;
+    end;
+    pe32.dwSize := sizeof(pe32);
+    dwRet := 0;
+    if Process32First(hProcessSnap, pe32) then
+    begin
+        repeat
+            if UpperCase(strpas(szName)) = UpperCase(pe32.szExeFile) then
+            begin
+                dwRet := pe32.th32ProcessID;
+                break;
+            end;
+        until (Process32Next(hProcessSnap, pe32) = FALSE);
+    end;
+    CloseHandle(hProcessSnap);
+    Result := dwRet;
+end;
+
+function StartProcessAndBypassUAC(CommandLine: LPSTR; var procInfo: PROCESS_INFORMATION): Boolean;
+var
+    hUserTokenDup, hPToken: THandle;
+    dwSessionId, dwTokenUserLength, dwReturnLength: DWORD;
+    sa: SECURITY_ATTRIBUTES;
+    EnvironmentFromUser: THandle;
+    lpEnvironment: PPoint;
+    si: TSTARTUPINFO;
+    return: Boolean;
+    sd: PSECURITY_DESCRIPTOR;
+    pTIL: ^TTokenMandatoryLabel;
+    lpszSid: LPWSTR;
+    sddl: LPWSTR;
+    SecurityDescriptorSize: PULONG;
+    test: string;
+
+const
+    SDDL_REVISION_1: Integer = 1;
+begin
+    hUserTokenDup := 0;
+    hPToken := 0;
+    procInfo.hProcess := 0;
+    dwTokenUserLength := 0;
+    sd := nil;
+    SecurityDescriptorSize := nil;
+    sa.nLength := SizeOf(sa);
+    sa.bInheritHandle := False;
+    dwSessionId := WTSGetActiveConsoleSessionId;
+    if not WTSQueryUserToken(dwSessionId, hPToken) then
+    begin
+        Result := False;
+        SaveLog('1');
+        Abort;
+    end;
+    if not GetTokenInformation(hPToken, Windows.TokenPrivileges
+        , @pTIL, dwTokenUserLength, dwReturnLength) then
+    begin
+        if GetLastError = ERROR_INSUFFICIENT_BUFFER then
+        begin
+            pTIL := Pointer(LocalAlloc(0, dwReturnLength));
+            if pTIL = nil then
+                Abort;
+            dwTokenUserLength := dwReturnLength;
+            dwReturnLength := 0;
+            if GetTokenInformation(hPToken, Windows.TokenPrivileges
+                , pTIL, dwTokenUserLength, dwReturnLength) and
+                IsValidSid((pTIL.Label_).Sid) then
+            begin
+                ConvertSidToStringSid(@(pTIL.Label_).Sid, @lpszSid);
+                sddl := Pointer(LocalAlloc(0, 1000));
+                //wsprintfw(sddl,lpszsid);
+                wvsprintfW(sddl, 'L"O:SYG:BAD:(A;;GA;;;SY)(A;;GA;;;%s)S:(ML;;NW;;;ME)"', @lpszSid);
+                if not CDTOCD(sddl, SDDL_REVISION_1, sd, SecurityDescriptorSize) then
+                begin
+                    Result := False;
+                    Abort;
+                end;
+                sa.lpSecurityDescriptor := sd;
+            end;
+            LocalFree(Cardinal(pTIL));
+        end;
+    end;
+
+
+
+    SaveLog(IntToStr(hPToken));
+    if not DuplicateTokenEx(hPToken, MAXIMUM_ALLOWED, @sa, SecurityIdentification,
+        TokenPrimary, hUserTokenDup) then
+    begin
+        Result := False;
+        SaveLog(IntToStr(GetLastError));
+        Abort;
+    end;
+    EnvironmentFromUser := 0;
+    if not CreateEnvironmentBlock(@lpEnvironment, hUserTokenDup, False) then
+    begin
+        CloseHandle(hPToken);
+        CloseHandle(hUserTokenDup);
+        Result := False;
+        SaveLog('3');
+        Abort;
+    end;
+    ZeroMemory(@si, SizeOf(TSTARTUPINFO));
+    si.lpDesktop := PChar('Winsta0\Default');
+    si.wShowWindow := SW_NORMAL;
+    return := False;
+
+    return := CreateProcessAsUser(hUserTokenDup,
+        nil,
+        CommandLine,
+        @sa,
+        @sa,
+        False,
+        NORMAL_PRIORITY_CLASS + CREATE_NEW_CONSOLE + CREATE_UNICODE_ENVIRONMENT,
+        @EnvironmentFromUser,
+        nil,
+        Si,
+        procInfo
+        );
+    if return then
+    begin
+        SaveLog(IntToStr(hUserTokenDup));
+        CloseHandle(hPToken);
+        CloseHandle(hUserTokenDup);
+        DestroyEnvironmentBlock(@EnvironmentFromUser);
+        Result := True;
+    end
+    else
+    begin
+        SaveLog('4');
+        Result := False;
+    end;
+
+end;
+
+function MyCreateProcessAsUser(CommandLine: LPSTR): Boolean;
+var
+    explorerhandle: thandle;
+    hToken: thandle;
+    ph: thandle;
+    si:StartupInfo;
+    pi: PROCESS_INFORMATION;
+    arr: array[0..254] of Char;
+    d: DWORD;
+    Ret, ok: boolean;
+begin
+    result := False;
+    ok := True;
+    ret := true;
+    arr := '';
+    { 提升权限 }
+    EnableDebugPrivilege(SE_SECURITY_NAME, True);
+    while (arr = '') or (UpperCase(arr) = 'SYSTEM') do
+    begin
+
+        SleepEx(200, False);
+        explorerhandle := GetIdByName('EXPLORER.EXE');
+        if explorerhandle <> 0 then
+        begin
+            ph := openprocess(PROCESS_ALL_ACCESS, false, explorerhandle);
+            if ph > 0 then
+            begin
+                if Openprocesstoken(ph, TOKEN_ALL_ACCESS, hToken) then
+                    ImpersonateLoggedOnUser(hToken);
+                d := SizeOf(arr);
+                GetUserName(arr, d);
+                RevertToSelf;
+            end;
+        end;
+    end;
+    try
+
+    zeromemory(@si,sizeof(STARTUPINFO));
+    si.cb:=sizeof(STARTUPINFO);
+    SI.lpDesktop:=PCHAR('Winsta0\Default');
+    si.wShowWindow:=SW_SHOWNORMAL;  //SW_HIDE;   //
+
+
+        Ret := CreateProcessAsUser(hToken,
+            nil,
+            CommandLine,
+            nil,
+            nil,
+            false,
+            CREATE_DEFAULT_ERROR_MODE,
+            nil,
+            nil,
+            si,
+            pi);
+        if Ret then result := True;
+    finally
+
+    end;
+end;
+
+
+
+function CreateProcessOnParentProcess(CommandLine: LPSTR):Boolean;
+var
+    pi: Process_Information;
+    si: STARTUPINFOEX;
+    SSI: STARTUPINFO;
+    cbAListSize: Cardinal;
+    pAList: PPROC_THREAD_ATTRIBUTE_LIST;
+    hParent,hToken,Explorerhandle: THandle;
+    arr: array[0..254] of Char;
+    d: DWORD;
+    Ret,ok:Boolean;
+    lpEnvironment: Pointer;
+begin
+  { 提升权限 }
+   EnableDebugPrivilege(SE_SECURITY_NAME, True);
+    result := False;
+    ok := True;
+    ret := true;
+    arr := '';
+
+    while (arr = '') or (UpperCase(arr) = 'SYSTEM') do
+    begin
+
+        SleepEx(200, False);
+        Explorerhandle := GetIdByName('EXPLORER.EXE');
+        if explorerhandle <> 0 then
+        begin
+            hParent := openprocess(PROCESS_ALL_ACCESS, false, explorerhandle);
+            if hParent > 0 then
+            begin
+                if Openprocesstoken(hParent, TOKEN_ALL_ACCESS, hToken) then
+                    ImpersonateLoggedOnUser(hToken);
+                d := SizeOf(arr);
+                GetUserName(arr, d);
+                RevertToSelf;
+            end;
+        end;
+    end;
+    lpEnvironment:=nil;
+
+    if  not CreateEnvironmentBlock(@lpEnvironment, hToken, False) then
+    begin
+        CloseHandle(hParent);
+        CloseHandle(hToken);
+        Result := False;
+        SaveLog(FormatDateTime('YYYY-MM-DD hh:nn:ss', now) + '创建进程环境失败');
+        Abort;
+    end;
+
+    try
+    ZeroMemory(@si,SizeOf(STARTUPINFOEX));
+    si.StartupInfox.cb := SizeOf(STARTUPINFO);
+    si.StartupInfox.lpDesktop:=PCHAR('Winsta0\Default');
+    si.StartupInfox.wShowWindow := SW_MINIMIZE;
+    ZeroMemory(@pi,SizeOf(Process_Information));
+    cbAListSize := 0;
+    InitializeProcThreadAttributeList(nil, 1, 0, cbAListSize);
+    pAList := HeapAlloc(GetProcessHeap(), 0, cbAListSize);
+    InitializeProcThreadAttributeList(pAList, 1, 0, cbAListSize);
+    UpdateProcThreadAttribute(pAList, 0, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, hParent, 4, nil, nil);
+    si.lpAttributeList := pAList;
+    Ret := CreateProcessAsUser(hToken,
+            nil,
+            CommandLine,
+            nil,
+            nil,
+            false,
+            EXTENDED_STARTUPINFO_PRESENT or CREATE_UNICODE_ENVIRONMENT,
+            lpEnvironment,
+            nil,
+            si.StartupInfoX,
+            pi);
+        if Ret then Result := True;
+    finally
+       
+    end;
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+    CloseHandle(hParent);
+    CloseHandle(hToken);
+    DestroyEnvironmentBlock(lpEnvironment);
+    lpEnvironment:=nil;
+    DeleteProcThreadAttributeList(pAList);
+    HeapFree(GetProcessHeap(), 0, pAList);
+end;
+
+{ 提升进程权限 }
+
+function EnableDebugPrivilege(PrivName: string; CanDebug: Boolean): Boolean;
+var
+    TP: Windows.TOKEN_PRIVILEGES;
+    Dummy: Cardinal;
+    hToken: THandle;
+begin
+    OpenProcessToken(GetCurrentProcess, TOKEN_ADJUST_PRIVILEGES, hToken);
+    TP.PrivilegeCount := 1;
+    LookupPrivilegeValue(nil, pchar(PrivName), TP.Privileges[0].Luid);
+    if CanDebug then
+        TP.Privileges[0].Attributes := SE_PRIVILEGE_ENABLED
+    else
+        TP.Privileges[0].Attributes := 0;
+    Result := AdjustTokenPrivileges(hToken, False, TP, SizeOf(TP), nil, Dummy);
+    hToken := 0;
+end;
+
+
+end.
+

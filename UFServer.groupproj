@@ -1,0 +1,60 @@
+﻿	<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+		<PropertyGroup>
+			<ProjectGuid>{C551B1EB-9297-4FD3-BDE8-75610CB4DA49}</ProjectGuid>
+		</PropertyGroup>
+		<ItemGroup>
+			<Projects Include="T3BackUp.dproj">
+				<Dependencies/>
+			</Projects>
+			<Projects Include="DBSQL\DBSQL.dproj">
+				<Dependencies/>
+			</Projects>
+			<Projects Include="AppFunc\AppFunc.dproj">
+				<Dependencies/>
+			</Projects>
+		</ItemGroup>
+		<ProjectExtensions>
+			<Borland.Personality>Default.Personality.12</Borland.Personality>
+			<Borland.ProjectType/>
+			<BorlandProject>
+				<Default.Personality/>
+			</BorlandProject>
+		</ProjectExtensions>
+		<Target Name="T3BackUp">
+			<MSBuild Projects="T3BackUp.dproj"/>
+		</Target>
+		<Target Name="T3BackUp:Clean">
+			<MSBuild Targets="Clean" Projects="T3BackUp.dproj"/>
+		</Target>
+		<Target Name="T3BackUp:Make">
+			<MSBuild Targets="Make" Projects="T3BackUp.dproj"/>
+		</Target>
+		<Target Name="DBSQL">
+			<MSBuild Projects="DBSQL\DBSQL.dproj"/>
+		</Target>
+		<Target Name="DBSQL:Clean">
+			<MSBuild Targets="Clean" Projects="DBSQL\DBSQL.dproj"/>
+		</Target>
+		<Target Name="DBSQL:Make">
+			<MSBuild Targets="Make" Projects="DBSQL\DBSQL.dproj"/>
+		</Target>
+		<Target Name="AppFunc">
+			<MSBuild Projects="AppFunc\AppFunc.dproj"/>
+		</Target>
+		<Target Name="AppFunc:Clean">
+			<MSBuild Targets="Clean" Projects="AppFunc\AppFunc.dproj"/>
+		</Target>
+		<Target Name="AppFunc:Make">
+			<MSBuild Targets="Make" Projects="AppFunc\AppFunc.dproj"/>
+		</Target>
+		<Target Name="Build">
+			<CallTarget Targets="T3BackUp;DBSQL;AppFunc"/>
+		</Target>
+		<Target Name="Clean">
+			<CallTarget Targets="T3BackUp:Clean;DBSQL:Clean;AppFunc:Clean"/>
+		</Target>
+		<Target Name="Make">
+			<CallTarget Targets="T3BackUp:Make;DBSQL:Make;AppFunc:Make"/>
+		</Target>
+		<Import Project="$(BDS)\Bin\CodeGear.Group.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Group.Targets')"/>
+	</Project>
