@@ -1,0 +1,9 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<BorlandProject>
+	<Transactions>
+    <Transaction>2019-01-06 15:54:22.302.dproj,C:\Documents and Settings\Administrator\My Documents\RAD Studio\Projects\Project9.dproj=D:\Source_Test\UFServer\DBSQL\DBSQL.DLL.dproj</Transaction>
+    <Transaction>2019-01-06 15:54:42.817.dproj,D:\Source_Test\UFServer\DBSQL\DBSQL.DLL.dproj=D:\Source_Test\UFServer\DBSQL\DBSQL.dproj</Transaction>
+    <Transaction>2019-01-06 15:57:59.708.pas,D:\Source_Test\UFServer\_delfile.pas=</Transaction>
+    <Transaction>2019-01-06 15:59:11.895.pas,D:\Source_Test\UFServer\DBSQL\Unit1.pas=D:\Source_Test\UFServer\DBSQL\_Int_DLL.pas</Transaction>
+  </Transactions>
+</BorlandProject>
